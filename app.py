@@ -1,68 +1,59 @@
-
 import streamlit as st
+import os
 import numpy as np
-import pandas as pd
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
+import pickle
+from collections import deque
+from sklearn.linear_model import SGDRegressor
 
-st.title("🔮 Prédicteur de séries temporelles (LSTM)")
-st.markdown("Saisis des valeurs (ex : 1.05, 2.3...) pour générer des prédictions avec un modèle LSTM.")
+st.set_page_config(page_title="Prédicteur de valeurs", layout="centered")
+st.title("🔢 Prédicteur de valeurs (à 2 décimales)")
 
-if "data" not in st.session_state:
-    st.session_state.data = []
+st.subheader("📁 Choisir ou créer un projet")
+projects_dir = "projets"
+os.makedirs(projects_dir, exist_ok=True)
 
-value = st.text_input("➕ Ajouter une nouvelle valeur :", placeholder="ex: 1.23")
-if st.button("Ajouter"):
-    try:
-        num = float(value.replace(",", "."))
-        st.session_state.data.append(num)
-        st.success(f"Ajouté : {num}")
-    except ValueError:
-        st.error("Entrez un nombre valide.")
+projets = [f.replace(".pkl", "") for f in os.listdir(projects_dir) if f.endswith(".pkl")]
+choix_projet = st.selectbox("Sélectionner un projet existant", [""] + projets)
+nouveau_projet = st.text_input("Ou créer un nouveau projet")
 
-if st.button("🗑️ Réinitialiser la série"):
-    st.session_state.data = []
-    st.success("Série réinitialisée.")
+projet = nouveau_projet if nouveau_projet else choix_projet
+modele_path = os.path.join(projects_dir, f"{projet}.pkl") if projet else None
 
-n_preds = st.slider("🔮 Combien de valeurs à prédire ?", 1, 50, 5)
+if not projet:
+    st.warning("Veuillez sélectionner ou créer un projet pour continuer.")
+    st.stop()
 
-data = st.session_state.data
-if len(data) >= 10:
-    st.line_chart(data, height=200, use_container_width=True)
+if os.path.exists(modele_path):
+    with open(modele_path, "rb") as f:
+        modele, historique = pickle.load(f)
+else:
+    modele = SGDRegressor(max_iter=1000, tol=1e-3)
+    historique = deque(maxlen=30)
 
-    series = np.array(data).reshape(-1, 1)
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(series)
+st.subheader(f"🔢 Prédiction pour le projet : `{projet}`")
 
-    X, y = [], []
-    for i in range(len(scaled) - 10):
-        X.append(scaled[i:i+10])
-        y.append(scaled[i+10])
-    X, y = np.array(X), np.array(y)
+if len(historique) < 30:
+    val = st.number_input(f"Entrez la valeur {len(historique)+1}/30", format="%.2f")
+    if st.button("Ajouter cette valeur"):
+        historique.append(val)
+        st.experimental_rerun()
+else:
+    entree = np.array(historique).reshape(1, -1)
+    prediction = modele.predict(entree)[0]
+    st.success(f"✅ Prochaine valeur prédite : **{prediction:.2f}**")
 
-    model = Sequential([
-        LSTM(64, activation='relu', input_shape=(X.shape[1], X.shape[2])),
-        Dropout(0.2),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=50, verbose=0)
+    nouvelle_val = st.number_input("Entrez la vraie valeur obtenue", format="%.2f")
+    if st.button("Apprendre cette valeur réelle"):
+        modele.partial_fit(entree, [nouvelle_val])
+        historique.append(nouvelle_val)
+        st.success("✔️ Valeur ajoutée et modèle mis à jour")
+        st.experimental_rerun()
 
-    last_input = scaled[-10:].reshape(1, 10, 1)
-    preds = []
-    for _ in range(n_preds):
-        pred = model.predict(last_input)[0][0]
-        preds.append(pred)
-        last_input = np.append(last_input[:, 1:, :], [[[pred]]], axis=1)
+if st.button("💾 Sauvegarder le modèle actuel"):
+    with open(modele_path, "wb") as f:
+        pickle.dump((modele, historique), f)
+    st.success(f"🧠 Modèle sauvegardé dans `{modele_path}`")
 
-    preds_rescaled = scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten()
-    st.subheader("📈 Prédictions")
-    st.line_chart(np.concatenate([data, preds_rescaled]))
-
-    df = pd.DataFrame({
-        "Valeurs Saisies": data + [None]*n_preds,
-        "Prédictions": [None]*len(data) + list(preds_rescaled)
-    })
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Télécharger CSV", csv, "predictions.csv", "text/csv")
+if historique:
+    st.markdown("### 📜 Historique des dernières valeurs")
+    st.write([round(x, 2) for x in list(historique)])
